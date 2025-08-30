@@ -1,21 +1,11 @@
-const AWS = require('aws-sdk');
 const cloudinary = require('cloudinary').v2;
 
-// AWS S3 yapılandırması
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION || 'eu-west-1'
-});
-
-// Cloudinary yapılandırması (mevcut fotoğraflar için)
+// Cloudinary yapılandırması
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
-
-const BUCKET_NAME = process.env.AWS_S3_BUCKET_NAME;
 
 export default async function handler(req, res) {
   // CORS headers
@@ -41,66 +31,10 @@ export default async function handler(req, res) {
 
     console.log('Fotoğraflar getiriliyor, User ID:', userId);
     
-    let allPhotos = [];
-
-    // 1. AWS S3'ten fotoğrafları getir
+    // Admin API ile basit resource listesi
+    let allResources = [];
+    
     try {
-      console.log('AWS S3\'ten fotoğraflar getiriliyor...');
-      
-      const s3Params = {
-        Bucket: BUCKET_NAME,
-        Prefix: `memories-to-cloud/${userId}/`,
-        MaxKeys: 1000
-      };
-
-      const s3Result = await s3.listObjectsV2(s3Params).promise();
-      
-      if (s3Result.Contents && s3Result.Contents.length > 0) {
-        console.log('S3\'te bulunan dosya sayısı:', s3Result.Contents.length);
-        
-        // S3 objelerini standart formata çevir
-        const s3Photos = s3Result.Contents.map(obj => {
-          // Metadata'yı almak için ayrı çağrı yapmak yerine dosya adından bilgi çıkar
-          const fileName = obj.Key.split('/').pop();
-          const fileExtension = fileName.split('.').pop().toLowerCase();
-          
-          // Dosya tipini uzantıdan tahmin et
-          const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
-          const videoExts = ['mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'mkv'];
-          
-          let fileType = 'unknown';
-          if (imageExts.includes(fileExtension)) {
-            fileType = 'image';
-          } else if (videoExts.includes(fileExtension)) {
-            fileType = 'video';
-          }
-
-          return {
-            id: obj.Key,
-            url: `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION || 'eu-west-1'}.amazonaws.com/${obj.Key}`,
-            originalName: fileName,
-            size: obj.Size || 0,
-            type: fileType,
-            uploadDate: obj.LastModified,
-            format: fileExtension,
-            storage: 'aws-s3'
-          };
-        });
-        
-        allPhotos = [...allPhotos, ...s3Photos];
-      } else {
-        console.log('S3\'te dosya bulunamadı');
-      }
-      
-    } catch (s3Error) {
-      console.error('S3 fetch error:', s3Error.message);
-      // S3 hatası olursa devam et, sadece log'la
-    }
-
-    // 2. Cloudinary'den mevcut fotoğrafları getir (backward compatibility)
-    try {
-      console.log('Cloudinary\'den mevcut fotoğraflar getiriliyor...');
-      
       // Image files
       const imageResult = await cloudinary.api.resources({
         type: 'upload',
@@ -109,22 +43,16 @@ export default async function handler(req, res) {
         resource_type: 'image'
       });
       
-      if (imageResult.resources && imageResult.resources.length > 0) {
-        console.log('Cloudinary image resources:', imageResult.resources.length);
-        const cloudinaryImages = imageResult.resources.map(resource => ({
-          id: resource.public_id,
-          url: resource.secure_url,
-          originalName: resource.filename || resource.display_name || resource.public_id.split('/').pop(),
-          size: resource.bytes || 0,
-          type: 'image',
-          uploadDate: resource.created_at,
-          format: resource.format,
-          storage: 'cloudinary'
-        }));
-        allPhotos = [...allPhotos, ...cloudinaryImages];
+      console.log('Image resources:', imageResult.resources?.length || 0);
+      if (imageResult.resources) {
+        allResources = [...allResources, ...imageResult.resources];
       }
+    } catch (imageError) {
+      console.log('Image fetch error:', imageError.message);
+    }
 
-      // Video files
+    try {
+      // Video files  
       const videoResult = await cloudinary.api.resources({
         type: 'upload',
         prefix: `photo-uploader/${userId}`,
@@ -132,40 +60,35 @@ export default async function handler(req, res) {
         resource_type: 'video'
       });
       
-      if (videoResult.resources && videoResult.resources.length > 0) {
-        console.log('Cloudinary video resources:', videoResult.resources.length);
-        const cloudinaryVideos = videoResult.resources.map(resource => ({
-          id: resource.public_id,
-          url: resource.secure_url,
-          originalName: resource.filename || resource.display_name || resource.public_id.split('/').pop(),
-          size: resource.bytes || 0,
-          type: 'video',
-          uploadDate: resource.created_at,
-          format: resource.format,
-          storage: 'cloudinary'
-        }));
-        allPhotos = [...allPhotos, ...cloudinaryVideos];
+      console.log('Video resources:', videoResult.resources?.length || 0);
+      if (videoResult.resources) {
+        allResources = [...allResources, ...videoResult.resources];
       }
-      
-    } catch (cloudinaryError) {
-      console.error('Cloudinary fetch error:', cloudinaryError.message);
-      // Cloudinary hatası olursa devam et, sadece log'la
+    } catch (videoError) {
+      console.log('Video fetch error:', videoError.message);
     }
     
-    console.log('Toplam bulunan dosya sayısı:', allPhotos.length);
+    console.log('Toplam bulunan dosya sayısı:', allResources.length);
 
-    // Tarihe göre sırala - en yeni önce
-    allPhotos.sort((a, b) => new Date(b.uploadDate) - new Date(a.uploadDate));
+    // Dosyaları formatla
+    const photos = allResources.map(resource => ({
+      id: resource.public_id,
+      url: resource.secure_url,
+      originalName: resource.filename || resource.display_name || resource.public_id.split('/').pop(),
+      size: resource.bytes || 0,
+      type: resource.resource_type === 'video' ? 'video' : 'image',
+      uploadDate: resource.created_at,
+      format: resource.format
+    }));
+
+    // Manuel sıralama - en yeni önce
+    photos.sort((a, b) => new Date(b.uploadDate) - new Date(a.uploadDate));
 
     res.status(200).json({
       success: true,
-      data: allPhotos,
-      count: allPhotos.length,
-      userId: userId,
-      sources: {
-        s3: allPhotos.filter(p => p.storage === 'aws-s3').length,
-        cloudinary: allPhotos.filter(p => p.storage === 'cloudinary').length
-      }
+      data: photos,
+      count: photos.length,
+      userId: userId
     });
 
   } catch (error) {
