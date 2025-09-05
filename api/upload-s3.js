@@ -1,14 +1,16 @@
-const cloudinary = require('cloudinary').v2;
+// /api/upload-s3.js - S3 version of your existing upload.js
+const AWS = require('aws-sdk');
+const { v4: uuidv4 } = require('uuid');
 
-// Cloudinary yapılandırması
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
+// AWS S3 configuration
+const s3 = new AWS.S3({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  region: process.env.AWS_REGION,
 });
 
 export default async function handler(req, res) {
-  // CORS headers
+  // CORS headers - same as your original
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -23,10 +25,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log('Upload request received');
+    console.log('S3 Upload request received');
     console.log('Content-Type:', req.headers['content-type']);
     
-    // Multipart form data parser
+    // Same multipart parser as your original code
     const parseMultipart = (req) => {
       return new Promise((resolve, reject) => {
         const boundary = req.headers['content-type']?.split('boundary=')[1];
@@ -95,7 +97,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Dosya bulunamadı' });
     }
 
-    // User ID'yi al (frontend'den gönderilen)
+    // User ID - same logic as your original
     const userId = fields.userId || 'default-user';
     console.log('User ID:', userId);
 
@@ -106,7 +108,7 @@ export default async function handler(req, res) {
       size: file.size
     });
     
-    // Dosya tipini kontrol et
+    // Same file type validation
     const allowedTypes = ['image/', 'video/'];
     const isAllowedType = allowedTypes.some(type => file.mimetype.startsWith(type));
     
@@ -114,36 +116,53 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Sadece resim ve video dosyaları destekleniyor' });
     }
 
-    // Base64'e çevir ve Cloudinary'e yükle
-    const base64Data = `data:${file.mimetype};base64,${file.data.toString('base64')}`;
-    
-    console.log('Uploading to Cloudinary...');
-    const uploadResult = await cloudinary.uploader.upload(base64Data, {
-      resource_type: file.mimetype.startsWith('video/') ? 'video' : 'image',
-      folder: `photo-uploader/${userId}`, // Kullanıcıya özel klasör
-      use_filename: true,
-      unique_filename: true,
-    });
+    // Generate unique filename for S3
+    const fileExtension = file.originalFilename.split('.').pop() || 'jpg';
+    const uniqueFilename = `${Date.now()}-${uuidv4()}.${fileExtension}`;
+    const s3Key = `photo-uploader/${userId}/${uniqueFilename}`;
 
-    console.log('Upload successful:', uploadResult.public_id);
+    // S3 upload parameters
+    const uploadParams = {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: s3Key,
+      Body: file.data, // Direct buffer upload (more efficient than base64)
+      ContentType: file.mimetype,
+      CacheControl: 'max-age=31536000', // 1 year cache
+      Metadata: {
+        'user-id': userId,
+        'upload-date': new Date().toISOString(),
+        'original-name': file.originalFilename,
+        'file-size': file.size.toString()
+      }
+    };
 
-    // Başarılı yanıt
+    console.log('Uploading to S3...');
+    const uploadResult = await s3.upload(uploadParams).promise();
+    console.log('S3 upload successful:', uploadResult.Key);
+
+    // CloudFront URL (faster than S3 direct URL)
+    const cloudFrontUrl = `https://${process.env.CLOUDFRONT_DOMAIN}/${s3Key}`;
+
+    // Success response - same format as your Cloudinary version
     res.status(200).json({
       success: true,
       message: 'Dosya başarıyla yüklendi!',
       data: {
-        id: uploadResult.public_id,
-        url: uploadResult.secure_url,
+        id: s3Key, // S3 key instead of Cloudinary public_id
+        url: cloudFrontUrl, // CloudFront URL for fast delivery
         originalName: file.originalFilename,
         size: file.size,
         type: file.mimetype,
         uploadDate: new Date().toISOString(),
-        userId: userId
+        userId: userId,
+        // Additional S3-specific info
+        s3Key: s3Key,
+        bucket: process.env.S3_BUCKET_NAME
       }
     });
 
   } catch (error) {
-    console.error('Yükleme hatası:', error);
+    console.error('S3 upload error:', error);
     res.status(500).json({ 
       error: 'Dosya yüklenirken hata oluştu',
       details: error.message 
