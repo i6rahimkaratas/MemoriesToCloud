@@ -2,6 +2,12 @@
   "functions": {
     "api/upload.js": {
       "maxDuration": 30
+    },
+    "api/upload-s3.js": {
+      "maxDuration": 30
+    },
+    "api/get-photos-s3.js": {
+      "maxDuration": 20
     }
   },
   "rewrites": [

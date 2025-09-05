@@ -9,7 +9,9 @@
     "start": "vercel dev"
   },
   "dependencies": {
-    "cloudinary": "^1.41.0"
+    "aws-sdk": "^2.1692.0",
+    "cloudinary": "^1.41.0",
+    "uuid": "^12.0.0"
   },
   "engines": {
     "node": "22.x"
